@@ -1,0 +1,312 @@
+////////////////////////////////////////////////////////////////////////////////
+// MAINTENANCE PREP
+////////////////////////////////////////////////////////////////////////////////
+
+(1) Maintenance objective:
+    Remove OSD nodes from a Ceph cluster
+	- 921243-ceph01
+    - 921244-ceph02
+    - 921245-ceph03
+    - 921246-ceph04
+    - 921247-ceph05
+
+  (1a) What should we check to confirm the solution is functioning as expected?
+  - Ceph is healthy
+  - OSD Node was removed corectly from CEPH
+
+(2) Departments involved:
+    - RPC
+    - Ensure all teams assigned to this maintenance are available
+(3) Owning department: RPC
+(4) Amount of time estimated for maintenance: 10 hours (note: more time may be needed on some clusters)
+--------------------------------------------------------------------------------
+(5) Maintenance Prep:
+--------------------------------------------------------------------------------
+1.0 - <RPC> Configure tmux session
+    # cat << _EOF >> ~/.tmux.conf
+bind-key H pipe-pane -o "exec cat >>$HOME/'#W-tmux.log'" \; display-message 'Toggled logging to $HOME/#W-tmux.log'
+_EOF
+
+ # tmux new -s {ticket_num}
+ Rename the tmux window to "ceph-osd-remove" using the shortcut "C-b ," (ctrl-b comma)
+ Press Ctrl - b H to activate logging
+ 
+2.0 - <RPC> Record the OSD weights of node to remove
+    # ceph osd tree
+    
+3.0 - <RPC> Check the ceph cluster capacity
+     # ceph df
+     # rados df
+     # ceph osd df	
+	
+--------------------------------------------------------------------------------
+(6) Maintenance Steps(OSDs removal Steps )::
+--------------------------------------------------------------------------------
+
+6.1 <RPC> Update super-ticket to notify customer that maintenance is starting.
+
+6.2 <RPC> Enable Alert suppressions for the devices
+    Go to https://rba.rackspace.com/suppression-manager/
+	1st suppression:
+          Reason: OSP Compute Node removal
+          Time Range
+          Start: Now
+          Duration: 10 hours
+          Save the suppression ID for the step when the suppression window is removed once the maintenance is completed.
+		Devices:
+		- 921243-ceph01
+		- 921244-ceph02
+		- 921245-ceph03
+		- 921246-ceph04
+		- 921247-ceph05
+		- 929262-ceph06
+		- 929265-ceph07
+		- 929266-ceph08
+		- 929267-ceph09
+		- 929268-ceph10
+		- 921215-director01
+		- 921217-controller01
+	  - 921218-controller02
+		- 921219-controller03
+		- 921220-compute001
+		- 921232-compute002
+		- 921233-compute003
+		- 921234-compute004
+		- 921235-compute005
+		- 921236-compute006
+		- 921237-compute007
+		- 921238-compute008
+		- 921239-compute009
+		- 921240-compute010
+		- 929109-compute011
+		- 929224-compute012
+		- 929226-compute013
+		- 929227-compute014
+		- 929232-compute019
+		- 929233-compute020
+		
+6.3 <RPC> Enable Alert suppressions for the devices
+    Go to https://rba.rackspace.com/suppression-manager/
+	2nd suppression:
+          Reason: OSP Scale-in
+          Time Range
+          Start: Now
+          Duration: 48 hours
+          Save the suppression ID for the step when the suppression window is removed once the maintenance is completed.
+          Devices:
+			- 921243-ceph01
+			- 921244-ceph02
+			- 921245-ceph03
+			- 921246-ceph04
+			- 921247-ceph05	
+6.4 <RPC> Login to the director node
+    ht 921215
+	su - stack  #become stack user
+
+6.5 - <RPC> Configure tmux session
+    # cat << _EOF >> ~/.tmux.conf
+    bind-key H pipe-pane -o "exec cat >>$HOME/'#W-tmux.log'" \; display-message 'Toggled logging to $HOME/#W-tmux.log'
+    _EOF
+
+   # tmux new -s {ticket_num}
+   Rename the tmux window to "ceph-osd-remove" using the shortcut "C-b ," (ctrl-b comma)
+   Press Ctrl - b H to activate logging
+
+6.6 - <RPC> Verify Ceph is happy and disable balancer plugin if enabled.  Note initial status in maintenance ticket.
+    # ssh heat-admin@921217-controller01 sudo ceph health
+       If ceph health is not HEALTH_OK then do not proceed! Escalate to SME!!
+
+6.7 - <RPC> Set maintenance flags on the cluster
+    # ssh heat-admin@921217-controller01 sudo ceph osd set noscrub
+    # ssh heat-admin@921217-controller01 sudo ceph osd set nodeep-scrub
+
+6.8 - <RPC> Weight the OSDs from the node to zero
+      ssh heat-admin@921243-ceph01
+	  $sudo su - 
+	  #ssh {OSD_node_to_remove} "ls /var/run/ceph/ |awk -F '.' '/ceph-osd/ {print \$2}'" | tee --append ~/osds_to_remove.txt.{ticket_num}
+	  # ceph osd crush reweight osd.ID  #Pick the correct osd number of the host listed in the activity plan
+	  #keep repeating this step for other OSDs for all 5 hosts 
+      #Check ceph health  (once peering and backfill is done we can move to second osd)	  
+6.9 - <RPC> Monitor Ceph until the rebalance finishes
+    # watch -n5 ceph -s
+
+6.10 - <RPC> Stop/Disable the ceph osd service for specific OSD on the node one after another
+
+      # systemctl disable ceph-osd@<osd_id>
+      # systemctl stop ceph-osd@<osd_id>
+
+6.11 - <RPC> Mark the osd as out one by one all osds part of the activity and belongs to the 5 nodes      
+	  # ceph osd out <osd_id>
+
+6.12 - <RPC> Remove all osds from crush, OSDs belongs to the 5 nodes
+      # ceph osd crush remove <osd_name>
+6.13 - <RPC> Delete all auth for the osds
+      # ceph auth del osd.<osd_id>
+6.14 - <RPC> Finally remove all osds with osd id one after another
+       # ceph osd rm <osd_id>
+
+
+6.15 - <RPC> Remove host bucket from crush
+        ceph osd crush rm {bucket-name} #  Once all the osds from one host are removed using above step  delete the host bucket
+	
+--------------------------------------------------------------------------------
+(7) Maintenance Steps(Ceph Node removal Steps )::
+--------------------------------------------------------------------------------
+7.0 <RPC> Backup templates and scripts directories on the Director node
+		$ mkdir /home/stack/{coretkt}/migration-3-$(date +"%d-%m-%Y")/backup/
+		$ cp -r ~/scripts /home/stack/{coretkt}/migration-3-$(date +"%d-%m-%Y")/backup/
+		$ cp -r ~/templates /home/stack/{coretkt}/migration-3-$(date +"%d-%m-%Y")/backup/
+
+7.01 - <RPC> Verify the stack and other things status
+    $ source ~/stackrc
+    $ openstack stack list
+    $ source ~/cdc1rc
+    $ openstack compute service list
+    ## nova-compute service should be disabled for the <Compute nodes>
+    $ openstack network agent list
+    $ openstack volume service list
+      +------------------+------------------------+------+----------+-------+----------------------------+
+      | Binary           | Host                   | Zone | Status   | State | Updated At                 |
+      +------------------+------------------------+------+----------+-------+----------------------------+
+      | cinder-scheduler | hostgroup              | nova | enabled  | up    | 2019-10-18T16:09:45.000000 |
+      | cinder-volume    | hostgroup@tripleo_ceph | nova | enabled  | up    | 2019-10-18T16:09:36.000000 |
+      | cinder-backup    | hostgroup              | nova | enabled  | up    | 2019-10-18T16:09:42.000000 |
+      | cinder-volume    | hostgroup@netapp_vol00 | nova | disabled | down  | 2019-04-12T16:19:43.000000 | <-- expected to be down
+      +------------------+------------------------+------+----------+-------+----------------------------+
+
+
+7.1 - <RPC>	 ## Fetch overcloud stack ID:
+     $ source ~/stackrc
+     $ openstack stack list
+     ## Fetch compute node ID which we want to remove:
+     [stack@921215-director01 ~]$ openstack server list |egrep ceph0[1-5]
+	| 9ba3eb22-a139-4916-b218-985740014446 | 921247-ceph05       | ACTIVE | ctlplane=10.2.20.125 | overcloud-full |
+	| 0cece573-5f9c-4e6d-bf18-bf289915061d | 921246-ceph04       | ACTIVE | ctlplane=10.2.20.121 | overcloud-full |
+	| 1beee80b-97c0-4d4a-aec4-5b216ec27f98 | 921245-ceph03       | ACTIVE | ctlplane=10.2.20.112 | overcloud-full |
+	| 952d16ca-1363-49bc-bb4b-0a9b642125a9 | 921243-ceph01       | ACTIVE | ctlplane=10.2.20.116 | overcloud-full |
+	| d932caf6-93fd-4969-ae4e-044b97205fb2 | 921244-ceph02       | ACTIVE | ctlplane=10.2.20.108 | overcloud-full |
+
+7.2 - <RPC>	## Update "~/scripts/delete-node.sh" file:
+      ## Ensure file has `openstack overcloud node delete` and not `openstack overcloud deploy`
+      ## Ensure overcloud stack ID/Name "cdc1" mentioned correctly
+      ## Remove "roles_data.yaml", "network_data.yaml" lines if present
+      ## Only keep environment files
+      ## At the end of the script, append compute node ID which we want to remove
+      ## Update the node count in "~/scripts/deploy.sh" for the compute role
+
+      ## Script should look like:
+      ```
+      [stack@921215-director01 scripts]$ cat delete-node.sh
+      #!/bin/bash
+	  set -eux
+
+      source ~/stackrc
+
+      openstack overcloud node delete \
+          --stack cdc1 \
+          --templates \
+            -e /usr/share/openstack-tripleo-heat-templates/environments/network-isolation.yaml \
+            -e /home/stack/templates/environments/ips-from-pool-all.yaml \
+            -e /home/stack/templates/environments/network-environment.yaml \
+            -e /home/stack/templates/environments/storage-environment.yaml \
+            -e /usr/share/openstack-tripleo-heat-templates/environments/use-dns-for-vips.yaml \
+            -e /home/stack/templates/enable-tls.yaml \
+            -e /home/stack/templates/inject-trust-anchor.yaml \
+            -e /home/stack/templates/wipe-disk-resource.yaml \
+            -e /home/stack/templates/rackspace-tuning.yaml \
+            -e /usr/share/openstack-tripleo-heat-templates/environments/tls-endpoints-public-ip.yaml \
+            -e /home/stack/templates/fernet.yaml \
+            -e /home/stack/templates/deployment-artifacts.yaml \
+			952d16ca-1363-49bc-bb4b-0a9b642125a9 d932caf6-93fd-4969-ae4e-044b97205fb2 1beee80b-97c0-4d4a-aec4-5b216ec27f98 0cece573-5f9c-4e6d-bf18-bf289915061d 9ba3eb22-a139-4916-b218-985740014446
+			
+7.3 - <RPC> Disable "backup_share" config for cinder-backup in the heat templates
+          $ cat /home/stack/templates/rackspace-tuning.yaml
+          [...]
+          DEFAULT/backup_share:
+          +    value: ""
+          #    value: "10.1.90.10:/data1/rpcbackups/"
+          [...]			
+7.4- <RPC> Disable stonith (fencing) inside of pacemaker on the overcloud control plane:
+    $ ssh heat-admin@921217-controller01 "sudo pcs property  | grep stonith-enabled"
+    $ ssh heat-admin@921217-controller01 "sudo pcs property set stonith-enabled=false"
+    $ ssh heat-admin@921217-controller01 "sudo pcs property  | grep stonith-enabled"
+	
+7.5 <RPC> Disable the NFS export for cinder-backup, and unmount it:
+    $ ansible -bi ~/ansible-osp-postsetup/overcloud_hosts controller -m shell -a "sed -e '/^backup/s/^backup_share/#backup_share/' -i.{coretkt}.save  /etc/cinder/cinder.conf"
+    $ ssh heat-admin@921217-controller01 "sudo pcs resource restart openstack-cinder-backup"
+    $ ansible -bi ~/ansible-osp-postsetup/overcloud_hosts controller -m shell -a "umount /var/lib/cinder/backup_mount/07aa065ae0511850928229cae4d739c9"
+
+7.6 <RPC> Pro-actively restart the os-collect-config service on all overcloud nodes
+    $ source ~/stackrc
+    $ ansible -i ~/ansible-osp-postsetup/overcloud_hosts overcloud -m systemd -ba "name=os-collect-config state=restarted"
+
+7.7 <RPC> Verify that all nodes are able to reach the undercloud meta-data service
+    $ ansible -i ~/ansible-osp-postsetup/overcloud_hosts overcloud -m shell -ba "curl -s http://169.254.169.254/openstack/latest"
+
+    # If the above task fails, restart openstack-nova-api on the undercloud/Director
+    # node to restart the meta-data service should be listening on port 8775
+    # ( systemctl restart openstack-nova-api )
+    # iptables -nL -t nat | grep 169.254
+    # REDIRECT   tcp  --  0.0.0.0/0            169.254.169.254      tcp dpt:80 redir ports 8775
+
+7.8 Remove these compute nodes involved in migration from MAAS (Monitoring) before initiating the deletion
+	# Verify limit of nodes being removed
+	$  ansible -i ~/ansible-osp-postsetup/overcloud_hosts overcloud --list-hosts --limit 921243-ceph01,921244-ceph02,921245-ceph03,921246-c
+eph04,921247-ceph05
+	# Delete monitoring from nodes
+	$ ansible -i ~/ansible-osp-postsetup/overcloud_hosts overcloud -m file -ba "path=/etc/rackspace-monitoring-agent.conf.d state=absent" --limit 921243-ceph01,921244-ceph02,921245-ceph03,921246-c
+eph04,921247-ceph05
+	$ ansible -i ~/ansible-osp-postsetup/overcloud_hosts overcloud -m service -ba "name=rackspace-monitoring-agent state=restarted" --limit 921243-ceph01,921244-ceph02,921245-ceph03,921246-c
+eph04,921247-ceph05
+
+7.9 <RPC> Run the script to remove the compute node:
+    $ cd ~
+    $ source ~/stackrc
+    $ sh scripts/delete-node.sh
+
+    ########################################################################################
+    ### ! Escalate to a SME in the event of a failure during this step, DO NOT RE-RUN  ! ###
+    ########################################################################################	
+	
+7.11 <RPC> Remove the node from Ironic(for all 5 ceph nodes)
+    $ source ~/stackrc
+    $ openstack baremetal node list	
+	$ openstack baremetal node delete ZZZZZZZZZZZZZZZZZZZ (Corresponding baremetal list of that same ceph node)
+
+7.12 <RPC> Add network storage route and copy back cinder.conf:
+    $ ansible -bi ~/ansible-osp-postsetup/overcloud_hosts controller -m shell -a 'ip route add 10.1.90.10 via 10.2.80.3 dev vlan203; echo "10.1.90.10 via 10.2.80.3" > /etc/sysconfig/network-scripts/route-vlan203'
+    $ ansible -bi ~/ansible-osp-postsetup/overcloud_hosts controller -m shell -a "cp -f /etc/cinder/cinder.conf.{coretkt}.save /etc/cinder/cinder.conf"	
+	
+7.13 <RPC> Restart the cinder-backup and cinder-volume services
+    $ ssh heat-admin@921217-controller01 "sudo pcs resource restart openstack-cinder-backup"
+    $ ssh heat-admin@921217-controller01 "sudo pcs resource restart openstack-cinder-volume"
+
+7.14 <RPC> Re-enable stonith (fencing) inside of pacemaker for the overcloud control plane
+    $ ssh heat-admin@921217-controller01 "sudo pcs property set stonith-enabled=true"
+    $ ssh heat-admin@921217-controller01 "sudo pcs property  | grep stonith-enabled"
+
+7.15 <RPC> Check status pcs resource status
+    $ ssh heat-admin@921217-controller01 "sudo pcs status
+
+7.16 <RPC> Enable "backup_share" config for cinder-backup in the templates:
+    $ cat /home/stack/templates/rackspace-tuning.yaml
+      [...]
+      DEFAULT/backup_share:
+          value: "10.1.90.10:/data1/rpcbackups/"
+      [...]
+
+--------------------------------------------------------------------------------
+(8) Post Maintenance Steps:
+--------------------------------------------------------------------------------
+8.1. Validate the configuration change after the completion of stack update.
+
+8.2 Verify there are no alerts in failed status it should be STATE:OK
+    $ python xmaas.py auth <YOUR_SSO> 5060724
+      SSO Password for <YOUR_SSO>:
+    $ python xmaas.py list| egrep ' 92[0-9]*-| 91[0-9]*-'
+      https://rba.rackspace.com
+
+8.3. Cancel the 2nd suppression
+
+8.4. Update super-ticket with results of maintenance.
+	  
