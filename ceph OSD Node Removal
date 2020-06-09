@@ -4,7 +4,7 @@
 
 (1) Maintenance objective:
     Remove OSD nodes from a Ceph cluster
-	- 921243-ceph01
+    - 921243-ceph01
     - 921244-ceph02
     - 921245-ceph03
     - 921246-ceph04
@@ -66,7 +66,7 @@ _EOF
 		- 929268-ceph10
 		- 921215-director01
 		- 921217-controller01
-	  - 921218-controller02
+	        - 921218-controller02
 		- 921219-controller03
 		- 921220-compute001
 		- 921232-compute002
@@ -94,14 +94,14 @@ _EOF
           Duration: 48 hours
           Save the suppression ID for the step when the suppression window is removed once the maintenance is completed.
           Devices:
-			- 921243-ceph01
-			- 921244-ceph02
-			- 921245-ceph03
-			- 921246-ceph04
-			- 921247-ceph05	
+		- 921243-ceph01
+		- 921244-ceph02
+		- 921245-ceph03
+		- 921246-ceph04
+		- 921247-ceph05	
 6.4 <RPC> Login to the director node
     ht 921215
-	su - stack  #become stack user
+    su - stack  #become stack user
 
 6.5 - <RPC> Configure tmux session
     # cat << _EOF >> ~/.tmux.conf
@@ -124,27 +124,29 @@ _EOF
       ssh heat-admin@921243-ceph01
 	  $sudo su - 
 	  #ssh {OSD_node_to_remove} "ls /var/run/ceph/ |awk -F '.' '/ceph-osd/ {print \$2}'" | tee --append ~/osds_to_remove.txt.{ticket_num}
-	  # ceph osd crush reweight osd.ID  #Pick the correct osd number of the host listed in the activity plan
+	  #ceph osd crush reweight osd.ID 0 #Pick the correct osd number of the host listed in the activity plan
 	  #keep repeating this step for other OSDs for all 5 hosts 
-      #Check ceph health  (once peering and backfill is done we can move to second osd)	  
+          #Check ceph health  (once peering and backfill is done we can move to second osd)	
+	  
 6.9 - <RPC> Monitor Ceph until the rebalance finishes
-    # watch -n5 ceph -s
+      # watch -n5 ceph -s
 
-6.10 - <RPC> Stop/Disable the ceph osd service for specific OSD on the node one after another
-
-      # systemctl disable ceph-osd@<osd_id>
-      # systemctl stop ceph-osd@<osd_id>
-
-6.11 - <RPC> Mark the osd as out one by one all osds part of the activity and belongs to the 5 nodes      
+6.10 - <RPC> Mark the osd as out one by one all osds part of the activity and belongs to the 5 nodes      
 	  # ceph osd out <osd_id>
+
+6.11 - <RPC> Stop/Disable the ceph osd service for specific OSD on the node one after another
+
+      # systemctl disable ceph-osd@<osd_id> ## Run this step on host which has this OSD ID belongs
+      # systemctl stop ceph-osd@<osd_id>    ## Run this step on host which has this OSD ID belongs
 
 6.12 - <RPC> Remove all osds from crush, OSDs belongs to the 5 nodes
       # ceph osd crush remove <osd_name>
+
 6.13 - <RPC> Delete all auth for the osds
       # ceph auth del osd.<osd_id>
+      
 6.14 - <RPC> Finally remove all osds with osd id one after another
        # ceph osd rm <osd_id>
-
 
 6.15 - <RPC> Remove host bucket from crush
         ceph osd crush rm {bucket-name} #  Once all the osds from one host are removed using above step  delete the host bucket
@@ -217,7 +219,7 @@ _EOF
             -e /usr/share/openstack-tripleo-heat-templates/environments/tls-endpoints-public-ip.yaml \
             -e /home/stack/templates/fernet.yaml \
             -e /home/stack/templates/deployment-artifacts.yaml \
-			952d16ca-1363-49bc-bb4b-0a9b642125a9 d932caf6-93fd-4969-ae4e-044b97205fb2 1beee80b-97c0-4d4a-aec4-5b216ec27f98 0cece573-5f9c-4e6d-bf18-bf289915061d 9ba3eb22-a139-4916-b218-985740014446
+	952d16ca-1363-49bc-bb4b-0a9b642125a9 d932caf6-93fd-4969-ae4e-044b97205fb2 1beee80b-97c0-4d4a-aec4-5b216ec27f98 0cece573-5f9c-4e6d-bf18-bf289915061d 9ba3eb22-a139-4916-b218-985740014446
 			
 7.3 - <RPC> Disable "backup_share" config for cinder-backup in the heat templates
           $ cat /home/stack/templates/rackspace-tuning.yaml
@@ -259,7 +261,10 @@ eph04,921247-ceph05
 	$ ansible -i ~/ansible-osp-postsetup/overcloud_hosts overcloud -m service -ba "name=rackspace-monitoring-agent state=restarted" --limit 921243-ceph01,921244-ceph02,921245-ceph03,921246-c
 eph04,921247-ceph05
 
-7.9 <RPC> Run the script to remove the compute node:
+7.9 <RPC> Disable the Ceph Storage node so the director does not reprovision it.
+    $ openstack baremetal node maintenance set <NodeID_CephNode>
+
+7.10 <RPC> Run the script to remove the compute node:
     $ cd ~
     $ source ~/stackrc
     $ sh scripts/delete-node.sh
@@ -271,7 +276,7 @@ eph04,921247-ceph05
 7.11 <RPC> Remove the node from Ironic(for all 5 ceph nodes)
     $ source ~/stackrc
     $ openstack baremetal node list	
-	$ openstack baremetal node delete ZZZZZZZZZZZZZZZZZZZ (Corresponding baremetal list of that same ceph node)
+    $ openstack baremetal node delete ZZZZZZZZZZZZZZZZZZZ (Corresponding baremetal list of that same ceph node)
 
 7.12 <RPC> Add network storage route and copy back cinder.conf:
     $ ansible -bi ~/ansible-osp-postsetup/overcloud_hosts controller -m shell -a 'ip route add 10.1.90.10 via 10.2.80.3 dev vlan203; echo "10.1.90.10 via 10.2.80.3" > /etc/sysconfig/network-scripts/route-vlan203'
