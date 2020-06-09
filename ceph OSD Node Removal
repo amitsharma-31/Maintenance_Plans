@@ -264,6 +264,12 @@ eph04,921247-ceph05
 7.9 <RPC> Disable the Ceph Storage node so the director does not reprovision it.
     $ openstack baremetal node maintenance set <NodeID_CephNode>
 
+7.10 <RPC> Install additional user with sudo rights as post removal heat-admin the only user will be removed. This needs to be executed on all 5 ceph OSD nodes involved in the activity
+  # useradd rackadm && echo "RackSpace@123" | passwd rackadm --stdin
+  # echo "rackadm ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/rackadm
+
+7.11 <RPC> Remove the ceph packages
+    # yum remove ceph* libcephfs1 python-cephfs puppet-cep
 7.10 <RPC> Run the script to remove the compute node:
     $ cd ~
     $ source ~/stackrc
