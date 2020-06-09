@@ -22,19 +22,10 @@
 --------------------------------------------------------------------------------
 (5) Maintenance Prep:
 --------------------------------------------------------------------------------
-1.0 - <RPC> Configure tmux session
-    # cat << _EOF >> ~/.tmux.conf
-bind-key H pipe-pane -o "exec cat >>$HOME/'#W-tmux.log'" \; display-message 'Toggled logging to $HOME/#W-tmux.log'
-_EOF
-
- # tmux new -s {ticket_num}
- Rename the tmux window to "ceph-osd-remove" using the shortcut "C-b ," (ctrl-b comma)
- Press Ctrl - b H to activate logging
- 
-2.0 - <RPC> Record the OSD weights of node to remove
+1.0 - <RPC> Record the OSD weights of node to remove
     # ceph osd tree
     
-3.0 - <RPC> Check the ceph cluster capacity
+2.0 - <RPC> Check the ceph cluster capacity
      # ceph df
      # rados df
      # ceph osd df	
@@ -114,7 +105,7 @@ _EOF
 
 6.6 - <RPC> Verify Ceph is happy and disable balancer plugin if enabled.  Note initial status in maintenance ticket.
     # ssh heat-admin@921217-controller01 sudo ceph health
-       If ceph health is not HEALTH_OK then do not proceed! Escalate to SME!!
+       ###If ceph health is not HEALTH_OK then do not proceed! Escalate to SME!!
 
 6.7 - <RPC> Set maintenance flags on the cluster
     # ssh heat-admin@921217-controller01 sudo ceph osd set noscrub
@@ -270,7 +261,8 @@ eph04,921247-ceph05
 
 7.11 <RPC> Remove the ceph packages
     # yum remove ceph* libcephfs1 python-cephfs puppet-cep
-7.10 <RPC> Run the script to remove the compute node:
+    
+7.12 <RPC> Run the script to remove the compute node:
     $ cd ~
     $ source ~/stackrc
     $ sh scripts/delete-node.sh
@@ -279,27 +271,27 @@ eph04,921247-ceph05
     ### ! Escalate to a SME in the event of a failure during this step, DO NOT RE-RUN  ! ###
     ########################################################################################	
 	
-7.11 <RPC> Remove the node from Ironic(for all 5 ceph nodes)
+7.13 <RPC> Remove the node from Ironic(for all 5 ceph nodes)
     $ source ~/stackrc
     $ openstack baremetal node list	
     $ openstack baremetal node delete ZZZZZZZZZZZZZZZZZZZ (Corresponding baremetal list of that same ceph node)
 
-7.12 <RPC> Add network storage route and copy back cinder.conf:
+7.14 <RPC> Add network storage route and copy back cinder.conf:
     $ ansible -bi ~/ansible-osp-postsetup/overcloud_hosts controller -m shell -a 'ip route add 10.1.90.10 via 10.2.80.3 dev vlan203; echo "10.1.90.10 via 10.2.80.3" > /etc/sysconfig/network-scripts/route-vlan203'
     $ ansible -bi ~/ansible-osp-postsetup/overcloud_hosts controller -m shell -a "cp -f /etc/cinder/cinder.conf.{coretkt}.save /etc/cinder/cinder.conf"	
 	
-7.13 <RPC> Restart the cinder-backup and cinder-volume services
+7.15 <RPC> Restart the cinder-backup and cinder-volume services
     $ ssh heat-admin@921217-controller01 "sudo pcs resource restart openstack-cinder-backup"
     $ ssh heat-admin@921217-controller01 "sudo pcs resource restart openstack-cinder-volume"
 
-7.14 <RPC> Re-enable stonith (fencing) inside of pacemaker for the overcloud control plane
+7.16 <RPC> Re-enable stonith (fencing) inside of pacemaker for the overcloud control plane
     $ ssh heat-admin@921217-controller01 "sudo pcs property set stonith-enabled=true"
     $ ssh heat-admin@921217-controller01 "sudo pcs property  | grep stonith-enabled"
 
-7.15 <RPC> Check status pcs resource status
+7.17 <RPC> Check status pcs resource status
     $ ssh heat-admin@921217-controller01 "sudo pcs status
 
-7.16 <RPC> Enable "backup_share" config for cinder-backup in the templates:
+7.18 <RPC> Enable "backup_share" config for cinder-backup in the templates:
     $ cat /home/stack/templates/rackspace-tuning.yaml
       [...]
       DEFAULT/backup_share:
