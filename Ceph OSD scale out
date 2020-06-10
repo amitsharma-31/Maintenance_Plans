@@ -1,0 +1,328 @@
+Ceph OSD Nodes scale out
+
+////////////////////////////////////////////////////////////////////////////////
+// MAINTENANCE PREP
+////////////////////////////////////////////////////////////////////////////////
+ (1) Maintenance objective:
+ Add OSD nodes to Ericsson(ATL - OSP13) CEPH cluster
+ (1a) What should we check to confirm the solution is functioning as expected?
+   - CEPH is happy
+   - New OSD nodes are added correctly to CEPH:
+     - New OSD nodes:
+         921243-ceph01 10.16.60.11
+         921244-ceph02 10.16.60.12
+         921245-ceph03 10.16.60.13
+         921246-ceph04 10.16.60.14
+         921247-ceph05 10.16.60.15
+   - OpenStack environment is functioning normally
+
+(2) Prerequisites:
+    - Network changes as per OSP13 are completed on the switch
+    - New nodes are UP and reachable from "1034486-ceph11"
+    - "1034486-ceph11" can ssh to the new nodes
+    - CEPH packages are removed from the new nodes
+    - Suppression is set for the nodes to be added
+
+ (3) Departments involved:
+     - RPC-R
+     - Storage SME
+ (4) Owning department:
+     - RPC
+ (5) Amount of time estimated for maintenance: <todo>
+
+NOTE: Escalate to a SME in the event of a failure, DO NOT RE-RUN the steps in this plan!!
+
+
+--------------------------------------------------------------------------------
+ (6) Maintenance Prep:
+--------------------------------------------------------------------------------
+6.1 Login to CEPH node:
+  $ ht 921215
+  [root@921215-director01 ~]# ssh rack@10.16.60.50
+  [rack@921215-director01 ~]$ sudo su - stack
+  [stack@921215-director01 ~]$ ssh heat-admin@1034486-ceph11
+  [heat-admin@1034486-ceph11 ~]$ sudo su -
+
+6.2 Create a maintenance directory:
+  $ mkdir -p ~/200608-03765/migration-1-$(date +"%d-%m-%Y")/backup/
+
+6.3 Start a logging tmux session.  All following steps should be run from within this session.
+   6.3.a. Start tmux:
+     $ TMOUT=0 tmux new-session -s 'ceph-osd-node-addition-200608-03765'
+
+   6.3.b. Enable logging:
+     press ctrl-b followed by a colon (':') and enter the following tmux command:
+     pipe-pane 'cat >> ~/200608-03765/migration-1-$(date +"%d-%m-%Y")/<ticketID_ceph-osd-node-addition-prep.log'
+
+6.4 Perform steps 6.4.1-6.4.7 on each new node:
+  6.4.1 Configure passwordless login from "1034486-ceph11" to the new nodes for root user
+  6.4.2 Deploy the network config files:
+    $ sudo su -
+    # cd /usr/share/ceph-ansible/
+    # ansible -bi <inventory> <new_node> -m copy -a 'src=/root/200608-03765/network-scripts/<new_node> dest=/mnt/'
+
+  6.4.3 Once the network scripts are copied, login to each node and manually copy the files to "/etc/sysconfig/network-scripts/" and restart the network.
+    ## Make sure all nodes can ping each other on all networks
+
+  6.4.4 Remove all CEPH, OpenStack and openvswitch packages:
+    # yum autoremove openvswitch openstack*  ceph*
+
+  6.4.5  Register the new nodes to Red Hat network.
+    # subscription-manager register
+    # subscription-manager attach --pool=8a85f999710f3aea01711bec4de2125c
+    # subscription-manager repos --disable=*
+    ## Subscribe to RHEL repos:
+    # subscription-manager repos --enable rhel-7-server-rpms --enable rhel-7-server-extras-rpms --enable rhel-7-server-rh-common-rpms
+    # yum repolist
+
+  6.4.6 Update the nodes to latest RHEL version
+    # yum update -y
+    ## Reboot the node if kernel is updated
+
+  6.4.7 Enable CEPH repos:
+   # subscription-manager repos --enable rhel-7-server-rhceph-3-osd-rpms --enable rhel-7-server-rhceph-3-tools-rpms
+   # yum repolist
+
+6.5 Install or update ceph-toolkit
+  $ ( cd /opt/ceph-toolkit ) || ( cd /opt && git clone https://github.com/rcbops/ceph-deployment-toolkit /opt/ceph-toolkit )
+
+6.6 Confirm ansible and CEPH versions
+   $ ansible --version
+   ## Version 2.6 is REQUIRED for ceph-ansible to run correctly
+   $ ceph -v
+   ## Version MUST be at least 12.2.xx 'Luminous release'.
+
+6.7 Confirm balancer plugin is enabled, active, and mode is upmap, if not DO NOT use the upmap version of this plan.
+  $ ceph balancer status
+   (example of valid balancer config)
+   {
+   "active": true,
+   "plans": [],
+   "mode": "upmap"
+   }
+
+6.8 Check the setting of the "osd_crush_update_on_start" parameter:
+   $ grep 'osd_crush_update_on_start' /etc/ceph/ceph.conf
+
+   ## If osd_crush_update_on_start is set to "false", then:
+   $ ceph osd tree
+
+   ## Take note of this OSD's parent in the crush hierarchy for use later. Typically it is simply the hostname,
+   ## but it may have a suffix added or something else.
+   ## If osd_crush_update_on_start is not present or is set to "true", then just proceed to the next step.
+
+6.9 Check that the new node can ping back to at least 3 other servers on both the replication interface and storage interface
+   ## log onto node to be added
+   $ ping -c3 10.16.80.21  ##storage - mon1
+   $ ping -c3 10.16.80.22  ##storage - mon2
+   $ ping -c3 10.16.80.23  ##storage - mon3
+   $ ping -c3 10.16.100.21 ##repl - mon1
+   $ ping -c3 10.16.100.22 ##repl - mon2
+   $ ping -c3 10.16.100.23 ##repl - mon3
+
+
+--------------------------------------------------------------------------------
+ (7) Maintenance Steps:
+--------------------------------------------------------------------------------
+7.1 Update ticket to inform the customer that maintenance is commencing.
+7.2 Enable Alert suppression
+    Go to https://rba.rackspace.com/suppression-manager/
+      Reason: CEPH OSD node addition - ATL
+      Time Range
+      Start: Now
+      Duration: <todo> hrs
+    Save the suppression ID for the step when the suppression window is removed once the maintenance is completed.
+    Devices:
+      - 1034486
+      - 1034748
+      - 1034749
+      - 1034750
+      - 1034751
+
+7.3 Login to CEPH node:
+  $ ht 921215
+  [root@921215-director01 ~]# ssh rack@10.16.60.50
+  [rack@921215-director01 ~]$ sudo su - stack
+  [stack@921215-director01 ~]$ ssh heat-admin@1034486-ceph11
+  [heat-admin@1034486-ceph11 ~]$ sudo su -
+
+7.4 Start a logging tmux session.  All following steps should be run from within this session.
+   7.4.a. Start tmux:
+     $ TMOUT=0 tmux a -t 'ceph-osd-node-addition-200608-03765'
+
+   7.4.b. Enable logging:
+     press ctrl-b followed by a colon (':') and enter the following tmux command:
+     pipe-pane 'cat >> ~/200608-03765/migration-1-$(date +"%d-%m-%Y")/<ticketID_ceph-osd-node-addition.log'
+
+7.5 Verify CEPH is happy and backup configuration
+  # ceph health
+  ## "HEALTH_WARN 120 nearfull osd(s); 11 pool(s) nearfull" ## <== Expected warning at the moment.
+  ## If CEPH health reports any other error than above then, escalate to SME!!
+
+  # cd /usr/share/ceph-ansible
+  # cp inventory inventory-200608-03765.bak
+
+
+7.6 Configure max_misplaced (optional regular window if provided)
+  # ceph config-key set mgr/balancer/max_misplaced 0.01
+  # ceph config-key set mgr/balancer/begin_time 0200
+  # ceph config-key set mgr/balancer/end_time 1400
+  # ceph mgr fail <current mgr>
+
+
+7.7 Set the maintenance flags to stop rebalancing and scrubs
+  # ceph osd set noscrub
+  # ceph osd set nodeep-scrub
+  # ceph osd set norebalance
+  # ceph osd set norecover
+  # ceph osd set nobackfill
+
+
+7.8 {OSD_node_to_add}:
+      [osds]
+      921243-ceph01 devices='["/dev/sdb","/dev/sdc","/dev/sdd","/dev/sde","/dev/sdf","/dev/sdg","/dev/sdh","/dev/sdi","/dev/sdj","/dev/sdk","/dev/sdl","/dev/sdm","/dev/sdn","/dev/sdo","/dev/sdp","/  dev/sdq","/dev/sdr","/dev/sds","/dev/sdt","/dev/sdu","/dev/sdv","/dev/sdw","/dev/sdx","/dev/sdy"]'
+      921244-ceph02 devices='["/dev/sdb","/dev/sdc","/dev/sdd","/dev/sde","/dev/sdf","/dev/sdg","/dev/sdh","/dev/sdi","/dev/sdj","/dev/sdk","/dev/sdl","/dev/sdm","/dev/sdn","/dev/sdo","/dev/sdp","/dev/sdq","/dev/sdr","/dev/sds","/dev/sdt","/dev/sdu","/dev/sdv","/dev/sdw","/dev/sdx","/dev/sdy"]'
+      921245-ceph03 devices='["/dev/sdb","/dev/sdc","/dev/sdd","/dev/sde","/dev/sdf","/dev/sdg","/dev/sdh","/dev/sdi","/dev/sdj","/dev/sdk","/dev/sdl","/dev/sdm","/dev/sdn","/dev/sdo","/dev/sdp","/dev/sdq","/dev/sdr","/dev/sds","/dev/sdt","/dev/sdu","/dev/sdv","/dev/sdw","/dev/sdx","/dev/sdy"]'
+      921246-ceph04 devices='["/dev/sdb","/dev/sdc","/dev/sdd","/dev/sde","/dev/sdf","/dev/sdg","/dev/sdh","/dev/sdi","/dev/sdj","/dev/sdk","/dev/sdl","/dev/sdm","/dev/sdn","/dev/sdo","/dev/sdp","/dev/sdq","/dev/sdr","/dev/sds","/dev/sdt","/dev/sdu","/dev/sdv","/dev/sdw","/dev/sdx","/dev/sdy"]'
+      921247-ceph05 devices='["/dev/sdb","/dev/sdc","/dev/sdd","/dev/sde","/dev/sdf","/dev/sdg","/dev/sdh","/dev/sdi","/dev/sdj","/dev/sdk","/dev/sdl","/dev/sdm","/dev/sdn","/dev/sdo","/dev/sdp","/dev/sdq","/dev/sdr","/dev/sds","/dev/sdt","/dev/sdu","/dev/sdv","/dev/sdw","/dev/sdx","/dev/sdy"]'
+      [...]
+
+7.9 Clean the partition table and first 512MB of the OSD disks from new nodes({OSD_node_to_add}):
+  # ssh {OSD_node_to_add}
+  # for DISK in /dev/sd{b..y}; do sgdisk -Z ${DISK}; done
+  # for DISK in /dev/sd{b..y}; do dd if=/dev/zero of=${DISK} bs=512M count=1; done
+
+7.10 Perform step 7.9.1 - 7.9.3 updating one node at a time(from step 7.7) to the CEPH inventory file:
+  7.10.1 Ensure the OSD node you want to add is in the inventory file
+     # egrep -i 'ceph0[1-5] devices' inventory
+     !!! If the node is missing from the inventory file then add it under the [osds] stanza !!!
+     ## Copy "{OSD_node_to_add}" from above.
+     ## NOTE: One node at a time
+
+  7.10.2 Run the ceph-ansible playbooks
+     # ansible-playbook -i inventory site.yml --limit 921243-ceph01,921244-ceph02,921245-ceph03,921246-ceph04,921247-ceph05
+
+  7.10.3 Confirm CEPH health and that the new OSD node have been added with non-zero weights.
+     # ceph health
+     ## If ceph health is not HEALTH_WARN (due to maintenance flags) then escalate to SME!!
+     # ceph osd tree
+
+7.11 Upmap any remapped PGs to allow balancer to carry out the rebalance gradually (run more than once)
+   # python /opt/ceph-toolkit/scripts/upmap-remapped.py |sh
+   ## (This will likely need to be run multiple times, continue re-running it until the percentage of misplaced
+   ## objects stops decreasing or is below 0.5%. It may take up to an hour on large clusters)
+
+7.12 Unset CEPH flags to allow rebalance
+   # ceph osd unset norebalance
+   # ceph osd unset norecover
+   # ceph osd set nobackfill
+   ## (Monitor until cluster reaches HEALTH_OK, which should be <todo> hour)
+
+7.13 Monitor CEPH until the rebalance finishes
+   # ceph osd unset noscrub
+   # ceph osd unset nodeep-scrub
+   # watch -n5 ceph -s
+   ## Ensure HEALTH_OK, all osds are up/in and all pg's are active+clean before moving onto the next steps.
+   ## If ceph health is not HEALTH_OK after the rebalance has finished then escalate to SME!!
+
+
+--------------------------------------------------------------------------------
+ (8) MaaS Steps: ### <todo> Need to verify the steps
+--------------------------------------------------------------------------------
+8.1 Login to CEPH node:
+  $ ht 921215
+  [root@921215-director01 ~]# ssh rack@10.16.60.50
+  [rack@921215-director01 ~]$ sudo su - stack
+  [stack@921215-director01 ~]$ ssh heat-admin@1034486-ceph11
+  [heat-admin@1034486-ceph11 ~]$ sudo su -
+
+8.2 MAAS agent setup
+# Update the rpc-maas repo to pull down latest changes (swift playbook change)
+	$ cd /opt/rpc-maas
+	$ git fetch
+	$ git reset --hard origin/master
+
+# Setup and source embedded ansible venv
+	$ curl https://raw.githubusercontent.com/rcbops/magnanimous-turbo-chainsaw/master/scripts/setup.sh | ANSIBLE_VERSION=2.7.11 bash
+	$ ANSIBLE_VERSION=2.7.11 source /opt/magnanimous-turbo-chainsaw/scripts/setup-workspace.sh
+
+# Generate a new MaaS impersonation token (local workstation)
+	$ git clone https://github.rackspace.com/rpc-internal/ops-scripts/
+	$ ./ops-scripts/maas-cloud-token.py <sso> <account num>
+
+# Replace maas_auth_token value with new impersonation token
+	$ vi /usr/share/ceph-ansible/user_rpcr_variables.yml
+
+# Verify if the new CEPH nodes are properly limited by command (just append newly added CEPH nodes)
+   ansible hosts --list-hosts --limit localhost,utility_all,921243-ceph01,921244-ceph02,921245-ceph03,921246-ceph04,921247-ceph05
+
+# Run site.yml to limited hosts (Same limit from above step)
+  ansible-playbook ${USER_ALL_VARS} playbooks/site.yml -f 75 --limit localhost,utility_all,921243-ceph01,921244-ceph02,921245-ceph03,921246-ceph04,921247-ceph05
+
+
+--------------------------------------------------------------------------------
+ (9) Install HP packages(on all new nodes):
+--------------------------------------------------------------------------------
+9.1 Install hp packages post node deployment
+   $ ssh root@<new-node>
+   $ sudo su -
+   # yum repolist
+   # cat << EOF > /etc/yum.repos.d/hp-spp.repo
+     [hp-spp]
+     name = HP Service Pack for Proliant
+     baseurl = http://mirror.rackspace.com/hp/SDR/repo/spp/rhel/\$releasever/\$basearch/current
+     enabled = 1
+     gpgcheck = 1
+     gpgkey = http://mirror.rackspace.com/hp/SDR/repo/spp/GPG-KEY-spp
+     EOF
+   # yum repolist
+   # yum install hponcfg ssacli hp-health hp-snmp-agents
+   # ssacli -h
+   # ssacli controller all show config detail
+   # hpasmcli -s "show powersupply"
+   # systemctl status hp-snmp-agents.service
+   # systemctl restart rackspace-monitoring-agent.service
+   # systemctl  status rackspace-monitoring-agent.service
+
+
+--------------------------------------------------------------------------------
+(10) Post Maintenance Steps:
+--------------------------------------------------------------------------------
+10.1 Reconfirm the status of the CEPH cluster
+    $ ht 921215
+    # ssh rack@10.16.60.50
+    $ sudo su - stack
+    $ ssh heat-admin@1034486-ceph11
+    $ sudo ceph -s
+    $ sudo ceph health detail
+    $ sudo ceph osd df tree
+
+10.2 Review all active/up openstack services to confirm a healthy state
+    $ ht 921215
+    # ssh rack@10.16.60.50
+    $ sudo su - stack
+    $ source ~/atl1rc
+    $ openstack compute service list
+    $ openstack volume service list
+    $ openstack network agent list
+
+10.3 Verify there are no alerts in failed status it should be STATE:OK
+    $ python xmaas.py auth <YOUR_SSO> 5060724
+      SSO Password for <YOUR_SSO>:
+    $ python xmaas.py list| egrep ' 103[0-9]*-| 91[0-9]*-| 92[0-9]*-'
+      https://rba.rackspace.com
+
+10.4 Cancel the suppressions
+
+10.5 Update super-ticket with results of maintenance.
+
+
+-------------------------------------------------------------------------------
+ (11) Escalation procedure // *DO NOT ABORT MAINTENANCE UNTIL FOLLOWED*
+--------------------------------------------------------------------------------
+11.1) Escalate to Storage/CEPH SME
+
+
+--------------------------------------------------------------------------------
+ (12) Rollback plan // *REQUIRED*
+--------------------------------------------------------------------------------
