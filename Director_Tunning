@@ -1,0 +1,76 @@
+https://access.redhat.com/articles/3597351
+
+OLD OSP10 should be fully decommissioned, as it is intended to also we need to allocated extra resources to OSP13 director
+
+
+# for i in `systemctl |grep openstack |awk -F " " '{ print $1 }' |grep openstack`; do
+systemctl stop $i; systemctl disable $i;
+done
+
+# yum autoremove openstack*
+
+Allocate the additional resources to OSP13 director VM
+
+# virsh dumpxml 921215-director01  > /rhosp_virt/921215-director01.xml
+If possible and required than take backup of /rhosp_virt/921215-director01.qcow2
+
+# virsh shutdown 921215-director01
+# cp /rhosp_virt/921215-director01.qcow2 /some/safe/location
+
+Increase the RAM of guest 
+	Current allocated:- 64GB
+        Total RAM with Host:- 125GB
+        Allocate additional:- 32GB (total = 96GB)
+
+[root@921215-director01 ~]# virsh dumpxml 3 |grep memory
+  <memory unit='KiB'>67108864</memory>
+# virsh edit 921215-director01
+  <memory unit='KiB'>100663296</memory>
+
+Define the cpu as per the numa node
+
+Start the VM 
+
+# virsh start 921215-director01
+
+
+Login to OSP13 director
+Increase max_connections to 8192 (from 4096)
+----------------------------------------------
+Current values
+[root@921215-director01 ~]# grep mysql_max_connections /etc/puppet/hieradata/puppet-stack-config.yaml
+mysql_max_connections: '4096'
+[root@921215-director01 ~]# grep connection /etc/my.cnf.d/galera.cnf
+max_connections = 4096
+
+Modify max_connections = 8192 in /etc/my.cnf.d/galera.cnf
+cp /etc/my.cnf.d/galera.cnf /etc/my.cnf.d/galera.cnf_$(date +%d%B%y)
+crudini --set /etc/my.cnf.d/galera.cnf mysqld innodb_buffer_pool_size 2147483648
+crudini --set /etc/my.cnf.d/galera.cnf mysqld innodb_buffer_pool_instances 8
+crudini --set /etc/my.cnf.d/galera.cnf mysqld connect_timeout 60
+crudini --set /etc/my.cnf.d/galera.cnf mysqld tmp_table_size 134217728
+crudini --set /etc/my.cnf.d/galera.cnf mysqld max_allowed_packet 67108864
+
+echo 'mysql_max_connections: 8192' >> /home/stack/hiera-overrides.yaml
+cat <<'EOF'>> /home/stack/hiera-overrides.yaml
+tripleo::profile::base::database::mysql::mysql_server_options:
+  'mysqld':
+    innodb_buffer_pool_instances: 8
+    innodb_buffer_pool_size: '2G'
+    tmp_table_size: '128M'
+    bind-address: "%{hiera('controller_host')}"                   # from puppet-stack-config.yaml
+    innodb_file_per_table: 'ON'                                   # from puppet-stack-config.yaml
+    max_allowed_packet: '64M'
+    connect_timeout: '60'
+EOF
+
+bump the rpc_response_timeout from 600 to 1200
+----------------------------------------------
+[root@921215-director01 ~]# grep ^rpc_response_timeout /etc/heat/heat.conf
+rpc_response_timeout=600
+
+cp /etc/heat/heat.conf{,.back}
+crudini --set /etc/heat/heat.conf DEFAULT rpc_response_timeout 1200
+systemctl restart openstack-heat*
+
+echo 'heat::rpc_response_timeout: 1200' >> /home/stack/hiera-overrides.yaml
