@@ -1,76 +1,223 @@
 https://access.redhat.com/articles/3597351
 
-OLD OSP10 should be fully decommissioned, as it is intended to also we need to allocated extra resources to OSP13 director
+////////////////////////////////////////////////////////////////////////////////
+// MAINTENANCE PREP     //
+////////////////////////////////////////////////////////////////////////////////
+(1) Maintenance objective:
+  Tune undercloud VM and the KVM host
 
+(1a) What should we check to confirm the solution is functioning as expected?
+ - Undercloud VM and KVM host is tuned as per Red Hat recommendations.
 
-# for i in `systemctl |grep openstack |awk -F " " '{ print $1 }' |grep openstack`; do
-systemctl stop $i; systemctl disable $i;
-done
+ (2) Departments involved: RPC-R
+ (3) Owning department: RPC-R
+ (4) Amount of time estimated for maintenance: ~6 hours
 
-# yum autoremove openstack*
+--------------------------------------------------------------------------------
+(5) Maintenance Steps:
+--------------------------------------------------------------------------------
+5.0 Login to director node and create maintenance directory:
+  $ ht 921215
+  [root@921215-director01 ~]# mkdir ~/200731-04361
 
-Allocate the additional resources to OSP13 director VM
+5.1 Start a logging tmux session.  All following steps should be run from within this session.
+   5.1.a. Start tmux:
+     $ TMOUT=0 tmux new-session -s 'undercloud-tuning-200731-04361'
 
-# virsh dumpxml 921215-director01  > /rhosp_virt/921215-director01.xml
-If possible and required than take backup of /rhosp_virt/921215-director01.qcow2
+   5.1.b. Enable logging:
+     press ctrl-b followed by a colon (':') and enter the following tmux command:
+     pipe-pane 'cat >> ~/200731-04361/undercloud/200731-04361.log'
 
-# virsh shutdown 921215-director01
-# cp /rhosp_virt/921215-director01.qcow2 /some/safe/location
+5.2 Shutdown the VM and take backup:
+  [root@921215-director01 ~]# virsh shutdown 921215-director01
+  [root@921215-director01 ~]# virsh dumpxml 921215-director01 > 716084-director01.xml | tee ~/200731-04361/921215-director01_`date +%F`.xml
+  [root@921215-director01 ~]# rsync -avh --progress ~/200731-04361/200731-04361_`date +%F`.xml  <remote serter/NFS share>
+  ## OR for time being:
+  [root@921215-director01 ~]# rsync -avh --progress ~/200731-04361/200731-04361_`date +%F`.xml  /data/rhosp_virt_bak
+  [root@921215-director01 ~]# rsync -avh --progress /rhosp_virt/921215-director01.qcow2  <remote serter/NFS share>
+  ## OR for time being:
+  [root@921215-director01 ~]# rsync -avh --progress /rhosp_virt/921215-director01.qcow2  /data/rhosp_virt_bak/921215-director01_`date +%F`.qcow2
 
-Increase the RAM of guest 
-	Current allocated:- 64GB
-        Total RAM with Host:- 125GB
-        Allocate additional:- 32GB (total = 96GB)
+5.3 Access the undercloud VM:
+  [root@921215-director01 ~]# virsh start 921215-director01
+  [root@921215-director01 ~]# ssh rack@10.16.60.50
+  [rack@<undercloud_vm> ~]$ sudo su -
 
-[root@921215-director01 ~]# virsh dumpxml 3 |grep memory
-  <memory unit='KiB'>67108864</memory>
-# virsh edit 921215-director01
-  <memory unit='KiB'>100663296</memory>
+5.4 Confirm the status of the heat stack and the overcloud services:
+  [rack@<undercloud_vm> ~]$ sudo su - stack
+  [stack@<undercloud_vm> ~]$ source ~/stackrc
+  [stack@<undercloud_vm> ~]$ openstack stack list
+  [stack@<undercloud_vm> ~]$ source ~/$(openstack stack list -c 'Stack Name' -f value)rc
+  [stack@<undercloud_vm> ~]$ openstack compute service list
+  [stack@<undercloud_vm> ~]$ openstack volume service list
+  [stack@<undercloud_vm> ~]$ openstack network agent list
+  [stack@<undercloud_vm> ~]$ sudo su -
 
-Define the cpu as per the numa node
+5.5 Enable console logs and specify "noop" scheduler:
+  [root@<undercloud_vm> ~]# cp /etc/default/grub ~/200731-04361/grub_$(date +%d%B%y)
+  [root@<undercloud_vm> ~]# cat /etc/default/grub
+  [...]
+  GRUB_CMDLINE_LINUX="crashkernel=auto rd.lvm.lv=rhel/root rd.lvm.lv=rhel/swap console=ttyS0 console=ttyS0,115200 elevator=noop"
+  [...]
+  [root@<undercloud_vm> ~]# grub2-mkconfig -o  /boot/grub2/grub.cfg
+  [root@<undercloud_vm> ~]# exit
+  [rack@<undercloud_vm> ~]$ exit
+  Shutdown the director VM
+  [root@921215-director01 ~]# virsh shutdown 921215-director01
 
-Start the VM 
+5.6 Enable numad service:
+  [root@921215-director01 ~]# yum install numactl
+  [root@921215-director01 ~]# systemctl start numad.service; systemctl enable numad.service
 
-# virsh start 921215-director01
+5.7 Disable THP and specify the CPUs which will be used for the VM:
+  [root@921215-director01 ~]# echo never >/sys/kernel/mm/transparent_hugepage/enabled
+  ## append "transparent_hugepage=never" and "isolcpus" in GRUB_CMDLINE_LINUX in file /etc/default/grub
+  [root@921215-director01 ~]# cp /etc/default/grub ~/200731-04361/grub_$(date +%d%B%y)
+  [root@921215-director01 ~]# cat /etc/default/grub
+  [...]
+  GRUB_CMDLINE_LINUX="crashkernel=auto rd.lvm.lv=rhel/root rd.lvm.lv=rhel/swap console=ttyS0 transparent_hugepage=never isolcpus=0,1,2,3,4,5,6,7,16,17,18,19,20,21,22,23"
+  [...]
+  [root@921215-director01 ~]# grub2-mkconfig -o  /boot/grub2/grub.cfg
 
+5.8 Define the huge page count:
+  [root@921215-director01 ~]# cp /etc/sysctl.conf ~/200731-04361/sysctl.conf_$(date +%d%B%y)
+  [root@921215-director01 ~]# echo 'vm.nr_hugepages=50000' >> /etc/sysctl.conf
+  [root@921215-director01 ~]# echo 50000 > /proc/sys/vm/nr_hugepages
+  [root@921215-director01 ~]# sysctl -w vm.nr_hugepages=50000
+  [root@921215-director01 ~]# cat /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
+  [root@921215-director01 ~]# mount -t hugetlbfs hugetlbfs /dev/hugepages
+  [root@921215-director01 ~]# systemctl restart libvirtd
 
-Login to OSP13 director
-Increase max_connections to 8192 (from 4096)
-----------------------------------------------
-Current values
-[root@921215-director01 ~]# grep mysql_max_connections /etc/puppet/hieradata/puppet-stack-config.yaml
-mysql_max_connections: '4096'
-[root@921215-director01 ~]# grep connection /etc/my.cnf.d/galera.cnf
-max_connections = 4096
+5.9 Reboot the host
+  [root@921215-director01 ~]# shutdown -r now
+  $ ht 921215
+  5.9.a. Start tmux:
+    $ TMOUT=0 tmux new-session -s 'undercloud-tuning-200731-04361'
 
-Modify max_connections = 8192 in /etc/my.cnf.d/galera.cnf
-cp /etc/my.cnf.d/galera.cnf /etc/my.cnf.d/galera.cnf_$(date +%d%B%y)
-crudini --set /etc/my.cnf.d/galera.cnf mysqld innodb_buffer_pool_size 2147483648
-crudini --set /etc/my.cnf.d/galera.cnf mysqld innodb_buffer_pool_instances 8
-crudini --set /etc/my.cnf.d/galera.cnf mysqld connect_timeout 60
-crudini --set /etc/my.cnf.d/galera.cnf mysqld tmp_table_size 134217728
-crudini --set /etc/my.cnf.d/galera.cnf mysqld max_allowed_packet 67108864
+  5.9.b. Enable logging:
+    press ctrl-b followed by a colon (':') and enter the following tmux command:
+    pipe-pane 'cat >> ~/200731-04361/undercloud/200731-04361.log'
 
-echo 'mysql_max_connections: 8192' >> /home/stack/hiera-overrides.yaml
-cat <<'EOF'>> /home/stack/hiera-overrides.yaml
-tripleo::profile::base::database::mysql::mysql_server_options:
-  'mysqld':
-    innodb_buffer_pool_instances: 8
-    innodb_buffer_pool_size: '2G'
-    tmp_table_size: '128M'
-    bind-address: "%{hiera('controller_host')}"                   # from puppet-stack-config.yaml
-    innodb_file_per_table: 'ON'                                   # from puppet-stack-config.yaml
-    max_allowed_packet: '64M'
-    connect_timeout: '60'
-EOF
+5.10 Verify the changes:
+  [root@921215-director01 ~]# cat /proc/cmdline
+  [root@921215-director01 ~]# cat /proc/meminfo |egrep -i huge
 
-bump the rpc_response_timeout from 600 to 1200
-----------------------------------------------
-[root@921215-director01 ~]# grep ^rpc_response_timeout /etc/heat/heat.conf
-rpc_response_timeout=600
+5.11 Tune undercloud VM xml:
+  [root@921215-director01 ~]# virsh edit 921215-director01
+  [...]
+    <memory unit='KiB'>100663296</memory>
+    <currentMemory unit='KiB'>100663296</currentMemory>
+    <memoryBacking>
+      <hugepages>
+        <page size='2048' unit='KiB'/>
+      </hugepages>
+    </memoryBacking>
+    <vcpu placement='static' cpuset='0-7,16-23'>24</vcpu>
+    <numatune>
+      <memory mode='preferred' nodeset='0'/>
+    </numatune>
+  [...]
 
-cp /etc/heat/heat.conf{,.back}
-crudini --set /etc/heat/heat.conf DEFAULT rpc_response_timeout 1200
-systemctl restart openstack-heat*
+5.12 Start and access the VM:
+  [root@921215-director01 ~]# virsh start 921215-director01
+  [root@921215-director01 ~]# ssh rack@10.16.60.50
+  [rack@<undercloud_vm> ~]$ sudo su -
 
-echo 'heat::rpc_response_timeout: 1200' >> /home/stack/hiera-overrides.yaml
+5.13 Tune undercloud:
+  [root@<undercloud_vm> ~]# mkdir ~/200731-04361
+  [root@<undercloud_vm> ~]# sudo mysqldump --opt --all-databases > ~/200731-04361/undercloud-all-databases.sql
+
+  [root@<undercloud_vm> ~]# cp /etc/my.cnf.d/galera.cnf ~/200731-04361/galera.cnf_$(date +%d%B%y)
+  [root@<undercloud_vm> ~]# crudini --set /etc/my.cnf.d/galera.cnf mysqld max_connections 8192
+  [root@<undercloud_vm> ~]# crudini --set /etc/my.cnf.d/galera.cnf mysqld innodb_buffer_pool_size 2G
+  [root@<undercloud_vm> ~]# crudini --set /etc/my.cnf.d/galera.cnf mysqld innodb_buffer_pool_instances 8
+  [root@<undercloud_vm> ~]# crudini --set /etc/my.cnf.d/galera.cnf mysqld connect_timeout 60
+  [root@<undercloud_vm> ~]# crudini --set /etc/my.cnf.d/galera.cnf mysqld tmp_table_size 128M
+  [root@<undercloud_vm> ~]# crudini --set /etc/my.cnf.d/galera.cnf mysqld max_allowed_packet 64M
+  [root@<undercloud_vm> ~]# systemctl restart mariadb
+  [root@<undercloud_vm> ~]# systemctl status mariadb
+
+  [root@<undercloud_vm> ~]# cp /etc/heat/heat.conf ~/200731-04361/heat.conf_$(date +%d%B%y)
+  [root@<undercloud_vm> ~]# crudini --set /etc/heat/heat.conf DEFAULT rpc_response_timeout 1200
+
+  ## Enable memcache for heat:
+  [root@<undercloud_vm> ~]# crudini --set /etc/heat/heat.conf cache backend dogpile.cache.memcached
+  [root@<undercloud_vm> ~]# crudini --set /etc/heat/heat.conf cache enabled true
+  [root@<undercloud_vm> ~]# crudini --set /etc/heat/heat.conf cache memcache_servers 127.0.0.1:11211
+
+  ## Set the number of heat engine workers to the number of half the SMT CPUs:
+  [root@<undercloud_vm> ~]# crudini --set /etc/heat/heat.conf DEFAULT num_engine_workers 12
+
+  ## Decrease the size of the executor thread pool for heat:
+  [root@<undercloud_vm> ~]# crudini --set /etc/heat/heat.conf DEFAULT executor_thread_pool_size 20
+
+  ## Update yaql settings in /etc/heat/heat.conf with:
+  [root@<undercloud_vm> ~]# crudini --set /etc/heat/heat.conf yaql limit_iterators 10000
+  [root@<undercloud_vm> ~]# systemctl restart openstack-heat*
+
+  ## Update this to use 16 processes
+  [root@<undercloud_vm> ~]# cp /etc/httpd/conf.d/10-keystone_wsgi_admin.conf ~/200731-04361/10-keystone_wsgi_admin.conf_$(date +%d%B%y)
+  [root@<undercloud_vm> ~]# grep WSGIDaemonProcess /etc/httpd/conf.d/10-keystone_wsgi_admin.conf
+    WSGIDaemonProcess keystone_admin display-name=keystone-admin group=keystone processes=16 threads=1 user=keystone
+  [root@<undercloud_vm> ~]# systemctl restart httpd
+  [root@<undercloud_vm> ~]# exit
+
+5.14 Confirm the status of the heat stack and the overcloud services:
+  [stack@<undercloud_vm> ~]$ source ~/stackrc
+  [stack@<undercloud_vm> ~]$ openstack stack list
+  [stack@<undercloud_vm> ~]$ source ~/$(openstack stack list -c 'Stack Name' -f value)rc
+  [stack@<undercloud_vm> ~]$ openstack compute service list
+  [stack@<undercloud_vm> ~]$ openstack volume service list
+  [stack@<undercloud_vm> ~]$ openstack network agent list
+  [stack@<undercloud_vm> ~]$ exit
+  [rack@<undercloud_vm> ~]$ exit
+
+5.15 Make above changes persistent through heat template:
+  [root@921215-director01 ~]# cp /home/stack/hiera-overrides.yaml ~/200731-04361/hiera-overrides.yaml_$(date +%d%B%y)
+  [root@921215-director01 ~]# vi /home/stack/hiera-overrides.yaml
+    [...]
+    tripleo::profile::base::database::mysql::mysql_server_options:
+      'mysqld':
+          max_connections: 8192
+          innodb_buffer_pool_instances: 8
+          innodb_buffer_pool_size: '2G'
+          tmp_table_size: '128M'
+          bind-address: "%{hiera('controller_host')}"                   # from puppet-stack-config.yaml
+          innodb_file_per_table: 'ON'                                   # from puppet-stack-config.yaml
+          max_allowed_packet: '64M'
+          connect_timeout: '60'
+
+    keystone::wsgi::apache::workers: 16
+    heat::engine::num_engine_workers: 12
+    heat::yaql_limit_iterators: 10000
+
+    heat::config::heat_config:
+        DEFAULT/executor_thread_pool_size:
+            value: 20
+            value: '2048'
+        cache/backend:
+            value: 'dogpile.cache.memcached'
+        cache/enabled:
+            value: 'true'
+        cache/memcache_servers:
+            value: '127.0.0.1:11211'
+    [...]
+
+5.16 Verify there are no alerts in failed status it should be STATE:OK
+  $ python xmaas.py auth <YOUR_SSO> 5060724
+    SSO Password for <YOUR_SSO>:
+  $ python xmaas.py list
+    https://rba.rackspace.com
+
+5.17 Update super-ticket with results of maintenance and request customer to validate the environment from their end.
+
+--------------------------------------------------------------------------------
+ (6) Escalation procedure // *DO NOT ABORT MAINTENANCE UNTIL FOLLOWED*
+--------------------------------------------------------------------------------
+6.1) Troubleshoot using remaining time
+6.2) Escalate to senior/lead tech
+6.3) Contact customer
+--------------------------------------------------------------------------------
+(7) Rollback plan // *Red Hat Escalation*
+ESCALATE TO A SME AS IT DEPENDS ON WHERE YOU ARE FROM THE PREP
+--------------------------------------------------------------------------------
